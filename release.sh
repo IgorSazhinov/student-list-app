@@ -18,10 +18,18 @@ check_status() {
     fi
 }
 
-# Функция для проверки существования ветки
+# Функция для проверки существования ветки (локально или на удаленном)
 branch_exists() {
-    git rev-parse --verify "$1" 2>/dev/null || \
-    git rev-parse --verify "origin/$1" 2>/dev/null
+    local branch_name="$1"
+    # Проверяем локальную ветку
+    if git show-ref --verify --quiet "refs/heads/${branch_name}"; then
+        return 0
+    fi
+    # Проверяем удаленную ветку
+    if git show-ref --verify --quiet "refs/remotes/origin/${branch_name}"; then
+        return 0
+    fi
+    return 1
 }
 
 # Функция для генерации уникального имени ветки
@@ -71,11 +79,10 @@ else
 fi
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║     🚀 Git Flow Release Script v2.0 (multi-release)        ║${NC}"
+echo -e "${BLUE}║     🚀 Git Flow Release Script v2.1 (fixed)                ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${YELLOW}📅 Дата релиза: ${RELEASE_DATE}${NC}"
-echo -e "${YELLOW}🔢 Номер релиза: ${RELEASE_NUM}${NC}"
 echo -e "${YELLOW}🌿 Ветка релиза: ${RC_BRANCH}${NC}"
 echo -e "${YELLOW}📝 Комментарий: ${COMMIT_MESSAGE}${NC}"
 echo ""
@@ -134,15 +141,21 @@ else
     
     # Проверяем, есть ли уже запись за сегодня
     if grep -q "^### ${RELEASE_DATE}" README.md; then
-        # Добавляем под существующей датой
-        sed -i.tmp "/^### ${RELEASE_DATE}/a\\
-- ${RELEASE_NOTES}" README.md && rm -f README.md.tmp
+        # Временный файл для macOS/Linux совместимости
+        TMP_FILE=$(mktemp)
+        while IFS= read -r line; do
+            echo "$line" >> "$TMP_FILE"
+            if [[ "$line" =~ ^###[[:space:]]+${RELEASE_DATE}$ ]]; then
+                echo "- ${RELEASE_NOTES}" >> "$TMP_FILE"
+            fi
+        done < README.md
+        mv "$TMP_FILE" README.md
     else
-        # Добавляем новую дату
-        sed -i.tmp "/## История релизов/a\\
+        # Добавляем новую дату после секции истории
+        sed -i.bak "/## История релизов/a\\
 ### ${RELEASE_DATE}\\
 - ${RELEASE_NOTES}\\
-" README.md && rm -f README.md.tmp
+" README.md && rm -f README.md.bak
     fi
 fi
 
@@ -177,7 +190,7 @@ echo ""
 REPO_URL=$(git remote get-url origin | sed 's/.*:\(.*\)\.git/\1/')
 PR_URL="https://github.com/${REPO_URL}/compare/main...${RC_BRANCH}?expand=1"
 
-echo -e "${YELLOW}1. Перейдите по ссылке:${NC}"
+echo -e "${YELLOW}1. Перейдите по ссылке для создания Pull Request:${NC}"
 echo -e "${GREEN}   ${PR_URL}${NC}"
 echo ""
 echo -e "${YELLOW}2. Настройте Pull Request:${NC}"
@@ -186,35 +199,42 @@ echo "   - compare: ${RC_BRANCH}"
 echo "   - Title: ${RELEASE_NOTES}"
 echo "   - Description: ${COMMIT_MESSAGE}"
 echo ""
-read -p "Нажмите Enter, когда PR будет создан и ВЛИТ в main..."
+read -p "Нажмите Enter, когда Pull Request будет создан и ВЛИТ в main..."
 
 # ============================================
 # 8. Вливаем rc в dev
 # ============================================
 echo -e "${GREEN}[7/9] Синхронизация dev с rc-веткой...${NC}"
 
+# Обновляем информацию о ветках
 git fetch origin || error_exit "Не удалось выполнить fetch"
+
+# Переключаемся на dev
 git checkout dev || error_exit "Не удалось переключиться на dev"
 git pull origin dev || error_exit "Не удалось обновить dev"
 
-if git merge-base --is-ancestor origin/${RC_BRANCH} dev; then
-    echo -e "${YELLOW}   ⚠️ Ветка ${RC_BRANCH} уже в dev${NC}"
+# Проверяем, существует ли еще rc-ветка (не удалили ли её при мерже PR)
+if ! git fetch origin ${RC_BRANCH} 2>/dev/null; then
+    echo -e "${YELLOW}   ⚠️ Ветка ${RC_BRANCH} уже удалена на сервере${NC}"
 else
-    git merge origin/${RC_BRANCH} --no-ff -m "chore: merge ${RC_BRANCH} into dev after release" || error_exit "Не удалось влить rc в dev"
-    git push origin dev || error_exit "Не удалось отправить dev"
-    echo -e "${GREEN}   ✅ ${RC_BRANCH} влита в dev${NC}"
+    # Проверяем, влита ли уже rc в dev
+    if git merge-base --is-ancestor origin/${RC_BRANCH} dev 2>/dev/null; then
+        echo -e "${YELLOW}   ⚠️ Ветка ${RC_BRANCH} уже в dev, пропускаем слияние${NC}"
+    else
+        git merge origin/${RC_BRANCH} --no-ff -m "chore: merge ${RC_BRANCH} into dev after release" || error_exit "Не удалось влить rc в dev"
+        git push origin dev || error_exit "Не удалось отправить обновления dev"
+        echo -e "${GREEN}   ✅ ${RC_BRANCH} влита в dev${NC}"
+    fi
 fi
 
 # ============================================
 # 9. Очистка
 # ============================================
 echo -e "${GREEN}[8/9] Очистка...${NC}"
-read -p "Удалить rc-ветку ${RC_BRANCH}? (y/n): " -n 1 -r
+read -p "Удалить локальную ветку ${RC_BRANCH}? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    git branch -d ${RC_BRANCH} 2>/dev/null
-    git push origin --delete ${RC_BRANCH} 2>/dev/null
-    echo -e "${GREEN}   🗑️ Ветка ${RC_BRANCH} удалена${NC}"
+    git branch -d ${RC_BRANCH} 2>/dev/null && echo -e "${GREEN}   🗑️ Локальная ветка удалена${NC}"
 fi
 
 # ============================================
@@ -232,7 +252,7 @@ echo -e "   ✅ Запись в README: ${RELEASE_NOTES}"
 echo -e "   ✅ Коммит: ${COMMIT_MESSAGE}"
 echo -e "   ✅ Влито в main (через PR)"
 echo -e "   ✅ Влито обратно в dev"
-[[ $REPLY =~ ^[Yy]$ ]] && echo -e "   ✅ Ветка удалена"
+[[ $REPLY =~ ^[Yy]$ ]] && echo -e "   ✅ Локальная ветка удалена"
 echo ""
 echo -e "${BLUE}🌐 GitHub Pages: https://${REPO_URL}/${NC}"
 echo ""
