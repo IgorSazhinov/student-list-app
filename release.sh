@@ -5,47 +5,90 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Функция для вывода ошибок
 error_exit() {
     echo -e "${RED}❌ Ошибка: $1${NC}" >&2
     exit 1
 }
 
-# Функция для проверки статуса команды
 check_status() {
     if [ $? -ne 0 ]; then
         error_exit "$1"
     fi
 }
 
-# Получаем дату для релиза
+# Функция для проверки существования ветки
+branch_exists() {
+    git rev-parse --verify "$1" 2>/dev/null || \
+    git rev-parse --verify "origin/$1" 2>/dev/null
+}
+
+# Функция для генерации уникального имени ветки
+generate_rc_branch() {
+    local base_date=$(date +%Y-%m-%d)
+    local counter=1
+    
+    # Проверяем базовое имя без счетчика
+    if ! branch_exists "rc/${base_date}"; then
+        echo "rc/${base_date}"
+        return
+    fi
+    
+    # Ищем свободный номер
+    while branch_exists "rc/${base_date}-${counter}"; do
+        counter=$((counter + 1))
+    done
+    echo "rc/${base_date}-${counter}"
+}
+
+# Функция для подсчета релизов за сегодня в README
+get_release_number() {
+    local today=$(date +%Y-%m-%d)
+    if [ ! -f "README.md" ]; then
+        echo "1"
+        return
+    fi
+    
+    # Считаем сколько раз встречается дата в истории
+    local count=$(grep -c "^### ${today}" README.md 2>/dev/null || echo 0)
+    echo $((count + 1))
+}
+
+# Получаем уникальные имена
+RC_BRANCH=$(generate_rc_branch)
 RELEASE_DATE=$(date +%Y-%m-%d)
-RC_BRANCH="rc/${RELEASE_DATE}"
-RELEASE_NOTES="Релиз ${RELEASE_DATE}"
-COMMIT_MESSAGE="Тестирование релиза ${RELEASE_DATE} пройдено"
+RELEASE_NUM=$(get_release_number)
+
+# Формируем сообщения
+if [[ "$RC_BRANCH" =~ -([0-9]+)$ ]]; then
+    RELEASE_NUMBER=${BASH_REMATCH[1]}
+    RELEASE_NOTES="Релиз ${RELEASE_DATE} #${RELEASE_NUMBER}"
+    COMMIT_MESSAGE="Тестирование релиза ${RELEASE_DATE} #${RELEASE_NUMBER} пройдено"
+else
+    RELEASE_NOTES="Релиз ${RELEASE_DATE}"
+    COMMIT_MESSAGE="Тестирование релиза ${RELEASE_DATE} пройдено"
+fi
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║     🚀 Git Flow Release Script v1.0                         ║${NC}"
+echo -e "${BLUE}║     🚀 Git Flow Release Script v2.0 (multi-release)        ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${YELLOW}📅 Дата релиза: ${RELEASE_DATE}${NC}"
+echo -e "${YELLOW}🔢 Номер релиза: ${RELEASE_NUM}${NC}"
 echo -e "${YELLOW}🌿 Ветка релиза: ${RC_BRANCH}${NC}"
 echo -e "${YELLOW}📝 Комментарий: ${COMMIT_MESSAGE}${NC}"
 echo ""
 
 # ============================================
-# 1. Проверяем, что мы в чистом состоянии
+# 1. Проверка состояния
 # ============================================
-echo -e "${GREEN}[1/8] Проверка состояния репозитория...${NC}"
+echo -e "${GREEN}[1/9] Проверка состояния репозитория...${NC}"
 
-# Проверяем, нет ли несохраненных изменений
 if ! git diff --quiet || ! git diff --cached --quiet; then
     error_exit "Есть несохраненные изменения. Сначала сделайте commit или stash."
 fi
 
-# Проверяем, что мы на dev
 CURRENT_BRANCH=$(git branch --show-current)
 if [ "$CURRENT_BRANCH" != "dev" ]; then
     echo -e "${YELLOW}   Текущая ветка: ${CURRENT_BRANCH}, переключаемся на dev...${NC}"
@@ -55,70 +98,75 @@ fi
 # ============================================
 # 2. Обновляем dev
 # ============================================
-echo -e "${GREEN}[2/8] Обновление ветки dev...${NC}"
+echo -e "${GREEN}[2/9] Обновление ветки dev...${NC}"
 git pull origin dev || error_exit "Не удалось обновить dev"
 
 # ============================================
 # 3. Создаем rc-ветку
 # ============================================
-echo -e "${GREEN}[3/8] Создание релизной ветки ${RC_BRANCH}...${NC}"
+echo -e "${GREEN}[3/9] Создание релизной ветки ${RC_BRANCH}...${NC}"
 git checkout -b ${RC_BRANCH} || error_exit "Не удалось создать ветку ${RC_BRANCH}"
 
 # ============================================
 # 4. Добавляем запись в README.md
 # ============================================
-echo -e "${GREEN}[4/8] Добавление записи о релизе в README.md...${NC}"
+echo -e "${GREEN}[4/9] Добавление записи о релизе в README.md...${NC}"
 
-# Проверяем, существует ли README.md
 if [ ! -f "README.md" ]; then
-    echo "# Student List App" > README.md
-    echo "" >> README.md
-    echo "## История релизов" >> README.md
-    echo "" >> README.md
-    echo "### ${RELEASE_DATE}" >> README.md
-    echo "- ${RELEASE_NOTES}" >> README.md
-    echo "" >> README.md
-    echo "## О проекте" >> README.md
-    echo "Приложение для отображения списка студентов с фильтрацией." >> README.md
+    cat > README.md << EOF
+# Student List App
+
+## История релизов
+
+### ${RELEASE_DATE}
+- ${RELEASE_NOTES}
+
+## О проекте
+Приложение для отображения списка студентов с фильтрацией.
+EOF
 else
-    # Проверяем, есть ли секция "История релизов"
+    # Проверяем, есть ли секция истории
     if ! grep -q "## История релизов" README.md; then
         echo "" >> README.md
         echo "## История релизов" >> README.md
         echo "" >> README.md
     fi
     
-    # Добавляем запись о релизе в начало истории
-    sed -i.tmp "/## История релизов/a\\
+    # Проверяем, есть ли уже запись за сегодня
+    if grep -q "^### ${RELEASE_DATE}" README.md; then
+        # Добавляем под существующей датой
+        sed -i.tmp "/^### ${RELEASE_DATE}/a\\
+- ${RELEASE_NOTES}" README.md && rm -f README.md.tmp
+    else
+        # Добавляем новую дату
+        sed -i.tmp "/## История релизов/a\\
 ### ${RELEASE_DATE}\\
 - ${RELEASE_NOTES}\\
 " README.md && rm -f README.md.tmp
+    fi
 fi
 
-# Показываем, что добавили
 echo -e "${YELLOW}   Добавлено в README.md:${NC}"
-echo -e "${BLUE}   ### ${RELEASE_DATE}${NC}"
 echo -e "${BLUE}   - ${RELEASE_NOTES}${NC}"
 
 # ============================================
-# 5. Коммитим изменения в rc-ветку
+# 5. Коммитим изменения
 # ============================================
-echo -e "${GREEN}[5/8] Коммит изменений в rc-ветку...${NC}"
+echo -e "${GREEN}[5/9] Коммит изменений в rc-ветку...${NC}"
 git add README.md || error_exit "Не удалось добавить README.md"
 git commit -m "${COMMIT_MESSAGE}" || error_exit "Не удалось создать коммит"
 
-# Показываем последний коммит
 echo -e "${YELLOW}   Создан коммит:${NC}"
 git log -1 --oneline
 
 # ============================================
-# 6. Пушим rc-ветку на GitHub
+# 6. Пушим rc-ветку
 # ============================================
-echo -e "${GREEN}[6/8] Отправка rc-ветки на GitHub...${NC}"
-git push -u origin ${RC_BRANCH} || error_exit "Не удалось отправить ветку ${RC_BRANCH}"
+echo -e "${GREEN}[6/9] Отправка rc-ветки на GitHub...${NC}"
+git push -u origin ${RC_BRANCH} || error_exit "Не удалось отправить ветку"
 
 # ============================================
-# 7. Инструкция для создания PR на GitHub
+# 7. Инструкция для PR
 # ============================================
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
@@ -129,65 +177,62 @@ echo ""
 REPO_URL=$(git remote get-url origin | sed 's/.*:\(.*\)\.git/\1/')
 PR_URL="https://github.com/${REPO_URL}/compare/main...${RC_BRANCH}?expand=1"
 
-echo -e "${YELLOW}1. Перейдите по ссылке для создания Pull Request:${NC}"
+echo -e "${YELLOW}1. Перейдите по ссылке:${NC}"
 echo -e "${GREEN}   ${PR_URL}${NC}"
 echo ""
 echo -e "${YELLOW}2. Настройте Pull Request:${NC}"
 echo "   - base: main"
 echo "   - compare: ${RC_BRANCH}"
-echo "   - Title: Release ${RELEASE_DATE}"
-echo "   - Description: ${RELEASE_NOTES}"
+echo "   - Title: ${RELEASE_NOTES}"
+echo "   - Description: ${COMMIT_MESSAGE}"
 echo ""
-read -p "Нажмите Enter, когда Pull Request будет создан и ВЛИТ в main..."
+read -p "Нажмите Enter, когда PR будет создан и ВЛИТ в main..."
 
 # ============================================
-# 8. Вливаем rc-ветку обратно в dev
+# 8. Вливаем rc в dev
 # ============================================
-echo -e "${GREEN}[7/8] Синхронизация dev с rc-веткой...${NC}"
+echo -e "${GREEN}[7/9] Синхронизация dev с rc-веткой...${NC}"
 
-# Обновляем информацию о ветках
 git fetch origin || error_exit "Не удалось выполнить fetch"
-
-# Переключаемся на dev
 git checkout dev || error_exit "Не удалось переключиться на dev"
 git pull origin dev || error_exit "Не удалось обновить dev"
 
-# Вливаем rc-ветку в dev
 if git merge-base --is-ancestor origin/${RC_BRANCH} dev; then
-    echo -e "${YELLOW}   ⚠️ Ветка ${RC_BRANCH} уже в dev, пропускаем слияние...${NC}"
+    echo -e "${YELLOW}   ⚠️ Ветка ${RC_BRANCH} уже в dev${NC}"
 else
     git merge origin/${RC_BRANCH} --no-ff -m "chore: merge ${RC_BRANCH} into dev after release" || error_exit "Не удалось влить rc в dev"
-    git push origin dev || error_exit "Не удалось отправить обновления dev"
+    git push origin dev || error_exit "Не удалось отправить dev"
     echo -e "${GREEN}   ✅ ${RC_BRANCH} влита в dev${NC}"
 fi
 
 # ============================================
-# 9. Удаляем rc-ветку (опционально)
+# 9. Очистка
 # ============================================
-echo -e "${GREEN}[8/8] Очистка...${NC}"
+echo -e "${GREEN}[8/9] Очистка...${NC}"
 read -p "Удалить rc-ветку ${RC_BRANCH}? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    git branch -d ${RC_BRANCH} 2>/dev/null || error_exit "Не удалось удалить локальную ветку"
-    git push origin --delete ${RC_BRANCH} || error_exit "Не удалось удалить удаленную ветку"
+    git branch -d ${RC_BRANCH} 2>/dev/null
+    git push origin --delete ${RC_BRANCH} 2>/dev/null
     echo -e "${GREEN}   🗑️ Ветка ${RC_BRANCH} удалена${NC}"
 fi
 
 # ============================================
 # Финальное сообщение
 # ============================================
+echo -e "${GREEN}[9/9] Завершение...${NC}"
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  🎉 РЕЛИЗ УСПЕШНО ЗАВЕРШЕН!                                 ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${YELLOW}📊 Итог:${NC}"
-echo -e "   ✅ Создана ветка: ${RC_BRANCH}"
-echo -e "   ✅ Добавлена запись в README.md: ${RELEASE_NOTES}"
+echo -e "   ✅ Ветка: ${RC_BRANCH}"
+echo -e "   ✅ Запись в README: ${RELEASE_NOTES}"
 echo -e "   ✅ Коммит: ${COMMIT_MESSAGE}"
-echo -e "   ✅ Ветка влита в main (через PR)"
-echo -e "   ✅ ${RC_BRANCH} влита обратно в dev"
-[[ $REPLY =~ ^[Yy]$ ]] && echo -e "   ✅ Ветка ${RC_BRANCH} удалена"
+echo -e "   ✅ Влито в main (через PR)"
+echo -e "   ✅ Влито обратно в dev"
+[[ $REPLY =~ ^[Yy]$ ]] && echo -e "   ✅ Ветка удалена"
 echo ""
 echo -e "${BLUE}🌐 GitHub Pages: https://${REPO_URL}/${NC}"
 echo ""
